@@ -1,0 +1,47 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: model-management
+  region: us-east-1
+  version: "1.32"
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: system
+    instanceType: m5.xlarge
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 4
+    labels:
+      role: system
+    tags:
+      nodegroup-role: system
+    iam:
+      withAddonPolicies:
+        ebs: true
+        cloudWatch: true
+
+addons:
+  - name: vpc-cni
+    version: latest
+    configurationValues: '{"enableNetworkPolicy": "true"}'
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+  - name: aws-ebs-csi-driver
+    version: latest
+    wellKnownPolicies:
+      ebsCSIController: true
+
+cloudWatch:
+  clusterLogging:
+    enableTypes:
+      - api
+      - audit
+      - authenticator
+      - controllerManager
+      - scheduler

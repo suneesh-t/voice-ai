@@ -1,0 +1,141 @@
+apiVersion: ray.io/v1
+kind: RayService
+metadata:
+  name: whisper-v3-turbo-service
+  namespace: default
+spec:
+  serveConfigV2: |
+    applications:
+      - name: whisper-v3-turbo
+        import_path: serve_app:app
+        route_prefix: /
+  rayClusterConfig:
+    rayVersion: "2.52.0"
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: "0.0.0.0"
+      serviceType: ClusterIP
+      template:
+        spec:
+          serviceAccountName: whisper-v3-turbo-sa
+          terminationGracePeriodSeconds: 120
+          containers:
+            - name: ray-head
+              image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/whisper-v3-turbo-serve:<IMAGE_TAG>
+              imagePullPolicy: IfNotPresent
+              ports:
+                - containerPort: 8000
+                  name: serve
+                - containerPort: 8080
+                  name: metrics
+                - containerPort: 6379
+                  name: gcs
+                - containerPort: 8265
+                  name: dashboard
+                - containerPort: 10001
+                  name: client
+              resources:
+                limits:
+                  cpu: "4"
+                  memory: "8Gi"
+                  ephemeral-storage: "10Gi"
+                requests:
+                  cpu: "4"
+                  memory: "8Gi"
+                  ephemeral-storage: "5Gi"
+              securityContext:
+                runAsUser: 1000
+                runAsNonRoot: true
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: RAY_DASHBOARD_MODULE_STARTUP_TIMEOUT_S
+                  value: "300"
+                - name: RAY_DASHBOARD_SUBPROCESS_MODULE_WAIT_READY_TIMEOUT
+                  value: "300"
+              readinessProbe:
+                tcpSocket:
+                  port: gcs
+                initialDelaySeconds: 15
+                periodSeconds: 10
+                timeoutSeconds: 5
+                failureThreshold: 5
+              livenessProbe:
+                tcpSocket:
+                  port: gcs
+                initialDelaySeconds: 120
+                periodSeconds: 30
+                timeoutSeconds: 5
+                failureThreshold: 5
+              lifecycle:
+                preStop:
+                  exec:
+                    command: ["/bin/sh", "-c", "ray stop"]
+    workerGroupSpecs:
+      - groupName: gpu-group
+        replicas: 1
+        minReplicas: 1
+        maxReplicas: 4
+        rayStartParams: {}
+        template:
+          spec:
+            serviceAccountName: whisper-v3-turbo-sa
+            terminationGracePeriodSeconds: 120
+            tolerations:
+              - key: "nvidia.com/gpu"
+                operator: "Exists"
+                effect: "NoSchedule"
+            nodeSelector:
+              ray.io/node-type: gpu-worker
+            containers:
+              - name: ray-worker
+                image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/whisper-v3-turbo-serve:<IMAGE_TAG>
+                imagePullPolicy: IfNotPresent
+                resources:
+                  limits:
+                    cpu: "3"
+                    memory: "14Gi"
+                    nvidia.com/gpu: "1"
+                    ephemeral-storage: "50Gi"
+                  requests:
+                    cpu: "3"
+                    memory: "14Gi"
+                    nvidia.com/gpu: "1"
+                    ephemeral-storage: "20Gi"
+                securityContext:
+                  runAsUser: 1000
+                  runAsNonRoot: true
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                env:
+                  - name: HUGGING_FACE_HUB_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: hf-token
+                        key: hf_token
+                readinessProbe:
+                  exec:
+                    command: ["ray", "health-check", "--address", "http://localhost:52365"]
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 15
+                  failureThreshold: 5
+                livenessProbe:
+                  exec:
+                    command: ["ray", "health-check", "--address", "http://localhost:52365"]
+                  initialDelaySeconds: 600
+                  periodSeconds: 60
+                  timeoutSeconds: 15
+                  failureThreshold: 10
+                lifecycle:
+                  preStop:
+                    exec:
+                      command: ["/bin/sh", "-c", "ray stop"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: whisper-v3-turbo-sa
+  namespace: default

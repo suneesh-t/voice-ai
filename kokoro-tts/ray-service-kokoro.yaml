@@ -1,0 +1,161 @@
+apiVersion: ray.io/v1
+kind: RayService
+metadata:
+  name: kokoro-tts
+  namespace: default
+spec:
+  serveConfigV2: |
+    applications:
+      - name: kokoro
+        import_path: serve_app:app
+        route_prefix: /
+  rayClusterConfig:
+    rayVersion: "2.52.0"
+    headGroupSpec:
+      rayStartParams:
+        num-cpus: "0"
+        num-gpus: "0"
+        dashboard-host: "0.0.0.0"
+      serviceType: ClusterIP
+      template:
+        spec:
+          terminationGracePeriodSeconds: 120
+          serviceAccountName: kokoro-tts-sa
+          containers:
+            - name: ray-head
+              image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/kokoro-tts-serve:<IMAGE_TAG>
+              imagePullPolicy: IfNotPresent
+              ports:
+                - containerPort: 8000
+                  name: serve
+                  protocol: TCP
+                - containerPort: 8080
+                  name: metrics
+                  protocol: TCP
+                - containerPort: 6379
+                  name: gcs
+                  protocol: TCP
+                - containerPort: 8265
+                  name: dashboard
+                  protocol: TCP
+                - containerPort: 10001
+                  name: client
+                  protocol: TCP
+              securityContext:
+                runAsUser: 1000
+                runAsNonRoot: true
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: RAY_DASHBOARD_MODULE_STARTUP_TIMEOUT_S
+                  value: "300"
+                - name: RAY_DASHBOARD_SUBPROCESS_MODULE_WAIT_READY_TIMEOUT
+                  value: "300"
+              resources:
+                limits:
+                  cpu: "4"
+                  memory: "8Gi"
+                  ephemeral-storage: "10Gi"
+                requests:
+                  cpu: "4"
+                  memory: "8Gi"
+                  ephemeral-storage: "5Gi"
+              readinessProbe:
+                tcpSocket:
+                  port: gcs
+                initialDelaySeconds: 15
+                periodSeconds: 10
+                timeoutSeconds: 5
+                failureThreshold: 5
+              livenessProbe:
+                tcpSocket:
+                  port: gcs
+                initialDelaySeconds: 120
+                periodSeconds: 30
+                timeoutSeconds: 5
+                failureThreshold: 5
+              lifecycle:
+                preStop:
+                  exec:
+                    command: ["/bin/sh", "-c", "ray stop"]
+    workerGroupSpecs:
+      - groupName: gpu-group
+        replicas: 1
+        minReplicas: 1
+        maxReplicas: 3
+        rayStartParams:
+          num-gpus: "1"
+        template:
+          spec:
+            terminationGracePeriodSeconds: 120
+            serviceAccountName: kokoro-tts-sa
+            tolerations:
+              - key: nvidia.com/gpu
+                value: "true"
+                operator: Equal
+                effect: NoSchedule
+            nodeSelector:
+              ray.io/node-type: gpu-worker
+              workload: kokoro-tts
+            containers:
+              - name: ray-worker
+                image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/kokoro-tts-serve:<IMAGE_TAG>
+                imagePullPolicy: IfNotPresent
+                env:
+                  - name: HUGGING_FACE_HUB_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: hf-token
+                        key: hf_token
+                  - name: KOKORO_PRELOAD_LANGS
+                    value: "a"
+                  - name: KOKORO_DEFAULT_VOICE
+                    value: "af_heart"
+                  - name: KOKORO_DEFAULT_LANG
+                    value: "a"
+                  - name: KOKORO_MAX_CHARS
+                    value: "5000"
+                  - name: HF_HOME
+                    value: "/home/ray/.cache/huggingface"
+                securityContext:
+                  runAsUser: 1000
+                  runAsNonRoot: true
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  limits:
+                    cpu: "3"
+                    memory: "8Gi"
+                    nvidia.com/gpu: "1"
+                    ephemeral-storage: "30Gi"
+                  requests:
+                    cpu: "3"
+                    memory: "8Gi"
+                    nvidia.com/gpu: "1"
+                    ephemeral-storage: "15Gi"
+                readinessProbe:
+                  exec:
+                    command: ["ray", "health-check"]
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+                  timeoutSeconds: 15
+                  failureThreshold: 5
+                livenessProbe:
+                  exec:
+                    command: ["ray", "health-check"]
+                  initialDelaySeconds: 300
+                  periodSeconds: 60
+                  timeoutSeconds: 15
+                  failureThreshold: 10
+                lifecycle:
+                  preStop:
+                    exec:
+                      command: ["/bin/sh", "-c", "ray stop"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kokoro-tts-sa
+  namespace: default
